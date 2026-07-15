@@ -1,0 +1,81 @@
+name: Publish Node Agent to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (for example: v0.0.6)."
+        required: false
+        type: string
+
+jobs:
+  publish:
+    name: Publish @cloudless-ai/node-agent
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_INPUT="${{ github.event.inputs.tag }}"
+          REF_NAME="${GITHUB_REF_NAME}"
+          REF_TYPE="${GITHUB_REF_TYPE}"
+
+          if [[ -n "${TAG_INPUT}" ]]; then
+            TAG="${TAG_INPUT}"
+          elif [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == v* ]]; then
+            TAG="${REF_NAME}"
+          else
+            echo "No release tag available. Provide a tag input."
+            exit 1
+          fi
+
+          if [[ "${TAG}" != v* ]]; then
+            echo "Tag must start with v. Got ${TAG}"
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download npm package tarball from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${TAG}" \
+            --repo cloudless-ai/node-agent \
+            --pattern 'cloudless-ai-node-agent-*.tgz' \
+            --dir dist
+
+      - name: Publish tarball to npm
+        env:
+          NODE_AUTH_TOKEN: ""
+          NPM_TOKEN: ""
+          NPM_CONFIG_USERCONFIG: ""
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 dist/cloudless-ai-node-agent-*.tgz | head -n1)"
+          PACKAGE_NAME="@cloudless-ai/node-agent"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "Skipping ${PACKAGE_NAME}@${VERSION}; already published."
+            exit 0
+          fi
+          npm config delete //registry.npmjs.org/:_authToken >/dev/null 2>&1 || true
+          npm publish "${TARBALL}" --access public --provenance
