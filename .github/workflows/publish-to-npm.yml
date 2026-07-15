@@ -29,11 +29,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          RELEASE_TAG="${{ github.event.release.tag_name || '' }}"
           TAG_INPUT="${{ github.event.inputs.tag }}"
           REF_NAME="${GITHUB_REF_NAME}"
           REF_TYPE="${GITHUB_REF_TYPE}"
 
-          if [[ -n "${TAG_INPUT}" ]]; then
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            TAG="${RELEASE_TAG}"
+          elif [[ -n "${TAG_INPUT}" ]]; then
             TAG="${TAG_INPUT}"
           elif [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == v* ]]; then
             TAG="${REF_NAME}"
@@ -72,10 +75,15 @@ jobs:
         run: |
           set -euo pipefail
           TARBALL="$(ls -1 dist/cloudless-ai-node-agent-*.tgz | head -n1)"
+          if [[ -z "${TARBALL}" || ! -f "${TARBALL}" ]]; then
+            echo "Failed to locate downloaded package tarball in dist/"
+            exit 1
+          fi
+          TARBALL_PATH="$(realpath "${TARBALL}")"
           PACKAGE_NAME="@cloudless-ai/node-agent"
           if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
             echo "Skipping ${PACKAGE_NAME}@${VERSION}; already published."
             exit 0
           fi
           npm config delete //registry.npmjs.org/:_authToken >/dev/null 2>&1 || true
-          npm publish "${TARBALL}" --access public --provenance
+          npm publish "${TARBALL_PATH}" --access public --provenance
