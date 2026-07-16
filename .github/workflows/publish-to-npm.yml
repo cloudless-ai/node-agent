@@ -23,6 +23,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Resolve release tag
         id: tag
@@ -55,31 +56,62 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Download npm package tarball from release
+        id: asset
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           mkdir -p dist
+
+          mapfile -t RELEASE_ASSETS < <(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '.assets[].name')
+          mapfile -t TGZ_ASSETS < <(printf '%s\n' "${RELEASE_ASSETS[@]}" | grep -E '\\.tgz$' || true)
+
+          if [[ ${#TGZ_ASSETS[@]} -eq 0 ]]; then
+            echo "No .tgz npm package asset found on release ${TAG}."
+            echo "Available assets:"
+            printf ' - %s\n' "${RELEASE_ASSETS[@]}"
+            echo "Attach an npm package tarball (for example: cloudless-ai-node-agent-${TAG#v}.tgz) to the release."
+            exit 1
+          fi
+
+          # Prefer a node-agent package tarball if multiple .tgz assets are present.
+          SELECTED_ASSET=""
+          for name in "${TGZ_ASSETS[@]}"; do
+            if [[ "${name}" == *node-agent* ]]; then
+              SELECTED_ASSET="${name}"
+              break
+            fi
+          done
+          if [[ -z "${SELECTED_ASSET}" ]]; then
+            SELECTED_ASSET="${TGZ_ASSETS[0]}"
+          fi
+
+          echo "Using release asset: ${SELECTED_ASSET}"
           gh release download "${TAG}" \
-            --repo cloudless-ai/node-agent \
-            --pattern 'cloudless-ai-node-agent-*.tgz' \
+            --repo "${REPO}" \
+            --pattern "${SELECTED_ASSET}" \
             --dir dist
+
+          TARBALL_PATH="dist/${SELECTED_ASSET}"
+          if [[ ! -f "${TARBALL_PATH}" ]]; then
+            echo "Failed to download ${SELECTED_ASSET}"
+            exit 1
+          fi
+          echo "tarball_path=${TARBALL_PATH}" >> "$GITHUB_OUTPUT"
 
       - name: Publish tarball to npm
         env:
-          NODE_AUTH_TOKEN: ""
-          NPM_TOKEN: ""
-          NPM_CONFIG_USERCONFIG: ""
           VERSION: ${{ steps.tag.outputs.version }}
+          TARBALL_PATH: ${{ steps.asset.outputs.tarball_path }}
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 dist/cloudless-ai-node-agent-*.tgz | head -n1)"
-          if [[ -z "${TARBALL}" || ! -f "${TARBALL}" ]]; then
+          if [[ -z "${TARBALL_PATH}" || ! -f "${TARBALL_PATH}" ]]; then
             echo "Failed to locate downloaded package tarball in dist/"
             exit 1
           fi
-          TARBALL_PATH="$(realpath "${TARBALL}")"
+          TARBALL_PATH="$(realpath "${TARBALL_PATH}")"
           PACKAGE_NAME="@cloudless-ai/node-agent"
           if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
             echo "Skipping ${PACKAGE_NAME}@${VERSION}; already published."
