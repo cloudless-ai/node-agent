@@ -66,7 +66,7 @@ jobs:
           mkdir -p dist
 
           mapfile -t RELEASE_ASSETS < <(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '.assets[].name')
-          mapfile -t TGZ_ASSETS < <(printf '%s\n' "${RELEASE_ASSETS[@]}" | grep -E '\\.tgz$' || true)
+          mapfile -t TGZ_ASSETS < <(printf '%s\n' "${RELEASE_ASSETS[@]}" | grep -E '\.tgz$' || true)
 
           if [[ ${#TGZ_ASSETS[@]} -eq 0 ]]; then
             echo "No .tgz npm package asset found on release ${TAG}."
