@@ -9,10 +9,15 @@ on:
         description: "Release tag to publish (for example: v0.0.6)."
         required: false
         type: string
+      dist_tag:
+        description: "npm dist-tag to apply (for example: next or latest)."
+        required: false
+        type: string
 
 jobs:
   publish:
     name: Publish @cloudless-ai/node-agent
+    if: ${{ github.event_name != 'release' || !contains(github.event.release.tag_name, '-pr.') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,8 +35,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          RELEASE_TAG="${{ github.event.release.tag_name || '' }}"
-          TAG_INPUT="${{ github.event.inputs.tag }}"
           REF_NAME="${GITHUB_REF_NAME}"
           REF_TYPE="${GITHUB_REF_TYPE}"
 
@@ -52,11 +55,57 @@ jobs:
           fi
 
           VERSION="${TAG#v}"
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            if [[ "${RELEASE_PRERELEASE}" == "true" || "${VERSION}" == *-* ]]; then
+              DIST_TAG="next"
+            else
+              DIST_TAG="latest"
+            fi
+          elif [[ -n "${DIST_TAG_INPUT}" ]]; then
+            DIST_TAG="${DIST_TAG_INPUT}"
+          elif [[ "${VERSION}" == *-* ]]; then
+            DIST_TAG="next"
+          else
+            DIST_TAG="latest"
+          fi
+
+          if [[ "${VERSION}" == *-* && "${DIST_TAG}" == "latest" ]]; then
+            echo "Refusing to publish prerelease version ${VERSION} under the latest dist-tag."
+            exit 1
+          fi
+
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=${DIST_TAG}" >> "$GITHUB_OUTPUT"
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease || false }}
+          TAG_INPUT: ${{ github.event.inputs.tag || '' }}
+          DIST_TAG_INPUT: ${{ github.event.inputs.dist_tag || '' }}
+
+      - name: Check whether npm version already exists
+        id: existing
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          DIST_TAG: ${{ steps.tag.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="@cloudless-ai/node-agent"
+          if EXISTING_VERSION="$(npm view "${PACKAGE_NAME}@${VERSION}" version 2>&1)"; then
+            echo "${PACKAGE_NAME}@${VERSION} already exists; applying dist-tag ${DIST_TAG}."
+            npm dist-tag add "${PACKAGE_NAME}@${VERSION}" "${DIST_TAG}"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${EXISTING_VERSION}" == *E404* ]]; then
+            echo "Version ${VERSION} is not published yet."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "${EXISTING_VERSION}" >&2
+            exit 1
+          fi
 
       - name: Download npm package tarball from release
         id: asset
+        if: steps.existing.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
@@ -102,8 +151,10 @@ jobs:
           echo "tarball_path=${TARBALL_PATH}" >> "$GITHUB_OUTPUT"
 
       - name: Publish tarball to npm
+        if: steps.existing.outputs.exists != 'true'
         env:
           VERSION: ${{ steps.tag.outputs.version }}
+          DIST_TAG: ${{ steps.tag.outputs.dist_tag }}
           TARBALL_PATH: ${{ steps.asset.outputs.tarball_path }}
         run: |
           set -euo pipefail
@@ -113,9 +164,5 @@ jobs:
           fi
           TARBALL_PATH="$(realpath "${TARBALL_PATH}")"
           PACKAGE_NAME="@cloudless-ai/node-agent"
-          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
-            echo "Skipping ${PACKAGE_NAME}@${VERSION}; already published."
-            exit 0
-          fi
           npm config delete //registry.npmjs.org/:_authToken >/dev/null 2>&1 || true
-          npm publish "${TARBALL_PATH}" --access public --provenance
+          npm publish "${TARBALL_PATH}" --access public --provenance --tag "${DIST_TAG}"
